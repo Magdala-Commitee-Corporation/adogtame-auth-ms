@@ -6,12 +6,28 @@
   "scripts": {
     "dev": "sst dev --stage dev",
     "deploy:dev": "sst deploy --stage dev",
-    "deploy:prod": "sst deploy --stage prod"
+    "deploy:prod": "sst deploy --stage prod",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "AWS_PROFILE=bier-personal tsx scripts/db.ts migrate",
+    "db:seed": "AWS_PROFILE=bier-personal tsx scripts/db.ts seed"
   },
   "devDependencies": {
+    "@aws-sdk/client-ssm": "^3.1176.0",
+    "@electric-sql/pglite": "^0.6.0",
     "@types/aws-lambda": "^8.10.164",
     "@types/node": "^26.6.6",
+    "drizzle-kit": "^0.31.11",
     "sst": "^4.17.2",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-rds-data": "^3.1176.0",
+    "@aws-sdk/client-sns": "^3.1176.0",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.21",
+    "zod": "^4.6.7"
   }
 }
