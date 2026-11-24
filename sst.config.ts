@@ -33,15 +33,66 @@ export default $config({
       },
     });
 
-    // Public functions: 30 s (I0.2, adog_ARCH.md §4.4).
-    api.route("GET /health", { handler: "src/handlers/health.handler", timeout: "30 seconds", environment: { STAGE: $app.stage } });
-
-    // Events (adog_ARCH.md §4.2): one queue per consumer, DLQ after 5 attempts.
-    // Consumers time out at 60 s; SQS hides a message for 6x that time.
     const topicArn = (publisher: string) =>
       aws.ssm.getParameterOutput({
         name: `/adogtame/${$app.stage}/topics/${publisher}-events-arn`,
       }).value;
+
+    // Aurora cluster from adogtame-infra, only in the stages that have it
+    // (adog_ARCH.md §3.6). Without it the API answers DEPENDENCIA_NO_DISPONIBLE.
+    const dbParams = await aws.ssm.getParametersByPath({ path: `/adogtame/${$app.stage}/db`, withDecryption: false });
+    const dbParam = (name: string) => dbParams.values[dbParams.names.indexOf(`/adogtame/${$app.stage}/db/${name}`)];
+    const db = dbParams.names.length ? { clusterArn: dbParam("cluster-arn"), secretArn: dbParam("secret-arn") } : undefined;
+
+    // Sessions and email tokens (adog_MS.md §3.2): looked up by hash, cleaned by TTL.
+    const sessions = new sst.aws.Dynamo("Sessions", {
+      fields: { pk: "string", idUsuario: "string", tipoFecha: "string" },
+      primaryIndex: { hashKey: "pk" },
+      globalIndexes: { PorUsuario: { hashKey: "idUsuario", rangeKey: "tipoFecha" } },
+      ttl: "expiraEn",
+    });
+
+    // Temporary key for the administration routes until the session
+    // authorizer exists (ADO-18). Empty keeps them closed.
+    const adminApiKey = new sst.Secret("AdminApiKey", "");
+
+    const authEventsTopicArn = topicArn("auth");
+
+    // One function for the whole HTTP API (Hono). Public functions: 30 s (adog_ARCH.md §4.4).
+    api.route("$default", {
+      handler: "src/handlers/api.handler",
+      timeout: "30 seconds",
+      link: [sessions],
+      environment: {
+        STAGE: $app.stage,
+        DB_NAME: "auth",
+        DB_RESOURCE_ARN: db?.clusterArn ?? "",
+        DB_SECRET_ARN: db?.secretArn ?? "",
+        ADMIN_API_KEY: adminApiKey.value,
+        AUTH_EVENTS_TOPIC_ARN: authEventsTopicArn,
+      },
+      permissions: [
+        { actions: ["sns:Publish"], resources: [authEventsTopicArn] },
+        ...(db
+          ? [
+              {
+                actions: [
+                  "rds-data:ExecuteStatement",
+                  "rds-data:BatchExecuteStatement",
+                  "rds-data:BeginTransaction",
+                  "rds-data:CommitTransaction",
+                  "rds-data:RollbackTransaction",
+                ],
+                resources: [db.clusterArn],
+              },
+              { actions: ["secretsmanager:GetSecretValue"], resources: [db.secretArn] },
+            ]
+          : []),
+      ],
+    });
+
+    // Events (adog_ARCH.md §4.2): one queue per consumer, DLQ after 5 attempts.
+    // Consumers time out at 60 s; SQS hides a message for 6x that time.
 
     const eventsDlq = new sst.aws.Queue("EventsDlq");
     const events = new sst.aws.Queue("Events", {
@@ -56,6 +107,6 @@ export default $config({
       filter: { tipo: ["CorreoSolicitado"] },
     });
 
-    return { api: api.url, eventsQueue: events.url, eventsDlq: eventsDlq.url };
+    return { api: api.url, eventsQueue: events.url, eventsDlq: eventsDlq.url, sessionsTable: sessions.name, database: db ? "auth" : "none" };
   },
 });
